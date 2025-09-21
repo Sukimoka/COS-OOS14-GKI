@@ -30,6 +30,8 @@ read -p "是否启用三星SSG IO调度器？(y/n，默认：y): " APPLY_SSG
 APPLY_SSG=${APPLY_SSG:-y}
 read -p "是否启用Re-Kernel？(y/n，默认：n): " APPLY_REKERNEL
 APPLY_REKERNEL=${APPLY_REKERNEL:-n}
+read -p "是否启用内核级基带保护？(y/n，默认：n): " APPLY_BBG
+APPLY_BBG=${APPLY_BBG:-n}
 read -p "是否安装风驰内核驱动（未完成）？(y/n，默认：n): " APPLY_SCX
 APPLY_SCX=${APPLY_SCX:-n}
 
@@ -53,6 +55,7 @@ echo "应用网络功能增强优化配置: $APPLY_BETTERNET"
 echo "应用 BBR 等算法: $APPLY_BBR"
 echo "启用三星SSG IO调度器: $APPLY_SSG"
 echo "启用Re-Kernel: $APPLY_REKERNEL"
+echo "启用内核级基带保护: $APPLY_BBG"
 echo "应用风驰内核驱动: $APPLY_SCX"
 echo "===================="
 echo
@@ -105,7 +108,7 @@ else
   echo ">>> 拉取 KernelSU Next 并设置版本..."
   curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
   cd KernelSU-Next
-  KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/commits?sha=next&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 10200)
+  KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/pershoot/KernelSU-Next/commits?sha=next&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 10200)
   sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
 fi
 
@@ -159,6 +162,9 @@ fi
 # ===== 应用 LZ4KD 补丁 =====
 if [[ "$APPLY_LZ4KD" == "y" || "$APPLY_LZ4KD" == "Y" ]]; then
   echo ">>> 应用 LZ4KD 补丁..."
+  if [[ "$KSU_BRANCH" == "n" || "$KSU_BRANCH" == "N" ]]; then
+    git clone https://github.com/ShirkNeko/SukiSU_patch.git
+  fi
   cp -r ./SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux/
   cp -r ./SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
   cp -r ./SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
@@ -251,7 +257,7 @@ if [[ "$APPLY_BETTERNET" == "y" || "$APPLY_BETTERNET" == "Y" ]]; then
   echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$DEFCONFIG_FILE"
   #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
   cd common
-  wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/config.patch
+  wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/config.patch
   patch -p1 -F 3 < config.patch || true
   cd ..
 fi
@@ -285,6 +291,34 @@ fi
 if [[ "$APPLY_REKERNEL" == "y" || "$APPLY_REKERNEL" == "Y" ]]; then
   echo ">>> 正在启用Re-Kernel..."
   echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG_FILE"
+fi
+
+# ===== 启用内核级基带保护 =====
+if [[ "$APPLY_BBG" == "y" || "$APPLY_BBG" == "Y" ]]; then
+  echo ">>> 正在启用内核级基带保护..."
+  echo "CONFIG_BBG=y" >> "$DEFCONFIG_FILE"
+  cd ./common/security
+  wget https://github.com/cctv18/Baseband-guard/archive/refs/heads/master.zip
+  unzip -q master.zip
+  mv "Baseband-guard-master" baseband-guard
+  printf '\nobj-$(CONFIG_BBG) += baseband-guard/\n' >> ./Makefile
+  sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/landlock/landlock,baseband_guard/ } }' ./Kconfig
+  awk '
+  /endmenu/ { last_endmenu_line = NR }
+  { lines[NR] = $0 }
+  END {
+    for (i=1; i<=NR; i++) {
+      if (i == last_endmenu_line) {
+        sub(/endmenu/, "", lines[i]);
+        print lines[i] "source \"security/baseband-guard/Kconfig\""
+        print ""
+        print "endmenu"
+      } else {
+          print lines[i]
+      }
+    }
+  }
+  ' ./Kconfig > Kconfig.tmp && mv Kconfig.tmp ./Kconfig
 fi
 
 # ===== 禁用 defconfig 检查 =====
